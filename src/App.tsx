@@ -124,6 +124,44 @@ const toTitleCase = (text: string) =>
     .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
     .join(" ");
 
+const compactButtonLabel = (text: string) => {
+  const cleaned = text
+    .replace(/\(.*?\)/g, "")
+    .replace(/[^a-zA-Z0-9&\s/-]/g, " ")
+    .replace(/[/-]/g, " ")
+    .trim();
+
+  const words = cleaned.split(/\s+/).filter(Boolean);
+  const stopWords = new Set([
+    "and",
+    "the",
+    "for",
+    "with",
+    "to",
+    "of",
+    "a",
+    "an",
+    "specific",
+    "preliminary",
+    "additional",
+    "demo",
+    "simulation",
+    "awareness",
+    "guidance",
+    "handling",
+    "information",
+    "details",
+    "overview",
+    "basics",
+  ]);
+
+  const filtered = words.filter((word) => !stopWords.has(word.toLowerCase()));
+  const picked = (filtered.length >= 2 ? filtered : words).slice(0, 3);
+  const compact = toTitleCase(picked.join(" "));
+
+  return compact || "Support";
+};
+
 const clampColor = (value: number) => Math.max(0, Math.min(255, Math.round(value)));
 
 const getDomainHint = (lines: string[]) => {
@@ -148,53 +186,108 @@ const pickWelcomeTitle = (lines: string[], domain: string) => {
 };
 
 const pickDescription = (lines: string[], domain: string) => {
-  const capabilityLines = lines.filter(
-    (line) =>
-      !/^use case/i.test(line) &&
-      !/^additional features/i.test(line) &&
-      !/^frequently asked/i.test(line) &&
-      !/^welcome messages/i.test(line) &&
-      !/\?$/.test(line) &&
-      line.length > 8 &&
-      line.length < 62
-  );
-  const uniqueCapabilities = [...new Set(capabilityLines)].slice(0, 6);
-  if (!uniqueCapabilities.length) {
+  const normalized = lines.join(" ").toLowerCase();
+  const phrases: string[] = [];
+  const addPhrase = (condition: boolean, text: string) => {
+    if (condition && !phrases.includes(text)) {
+      phrases.push(text);
+    }
+  };
+
+  if (domain === "Insurance") {
+    addPhrase(/coverage|policy/.test(normalized), "coverage exploration and policy guidance");
+    addPhrase(/quote|premium|deductible/.test(normalized), "quote requests and premium awareness");
+    addPhrase(/qualification|lead|capture/.test(normalized), "prospect qualification and lead capture");
+    addPhrase(/appointment|schedule|consultation/.test(normalized), "consultation scheduling");
+    addPhrase(/compliance|privacy|consent/.test(normalized), "compliance and data privacy support");
+    addPhrase(/follow-up|status|reminder|document/.test(normalized), "follow-up and status tracking");
+  }
+
+  if (domain === "Retail Banking") {
+    addPhrase(/account/.test(normalized), "account services");
+    addPhrase(/debit|card/.test(normalized), "debit card support");
+    addPhrase(/transaction|dispute/.test(normalized), "transaction issue resolution");
+    addPhrase(/loan/.test(normalized), "loan-related requests");
+    addPhrase(/service request|general/.test(normalized), "general banking queries");
+  }
+
+  if (!phrases.length) {
     return `I am your AI Agent. I can assist you with ${domain.toLowerCase()} questions, service requests, and follow-up support.`;
   }
-  const capabilityText = uniqueCapabilities
-    .map((line) => line.replace(/\(.*?\)/g, "").trim().toLowerCase())
-    .filter(Boolean)
-    .join(", ");
+
+  const limited = phrases.slice(0, 5);
+  const capabilityText =
+    limited.length === 1
+      ? limited[0]
+      : `${limited.slice(0, -1).join(", ")}, and ${limited[limited.length - 1]}`;
+
   return `I am your AI Agent. I can assist you with ${capabilityText}.`;
 };
 
-const baseIntentFromLabel = (label: string) => {
-  const normalized = label.toLowerCase();
-  if (normalized.includes("quote")) return "I want to request an insurance quote";
-  if (normalized.includes("schedule") || normalized.includes("appointment")) {
+const baseIntentFromLabel = (label: string, sourceText?: string) => {
+  const normalized = `${label} ${sourceText ?? ""}`.toLowerCase();
+
+  if (normalized.includes("quote") || normalized.includes("premium") || normalized.includes("deductible")) {
+    return "I want to request an insurance quote";
+  }
+  if (normalized.includes("schedule") || normalized.includes("appointment") || normalized.includes("consultation")) {
     return "I want to schedule a consultation";
   }
-  if (normalized.includes("policy")) return "I want to compare policy options";
+  if (normalized.includes("policy") || normalized.includes("plan") || normalized.includes("compare")) {
+    return "I want to compare policy options";
+  }
+  if (normalized.includes("lead") || normalized.includes("qualification") || normalized.includes("prospect")) {
+    return "I want to complete a quick qualification check";
+  }
+  if (normalized.includes("zip") || normalized.includes("vehicle") || normalized.includes("property")) {
+    return "I want to share my details for eligibility";
+  }
+  if (normalized.includes("follow") || normalized.includes("status") || normalized.includes("reference")) {
+    return "I want to check my request status";
+  }
+  if (normalized.includes("document")) return "I need help with document submission";
   if (normalized.includes("compliance") || normalized.includes("privacy")) {
     return "I need help understanding compliance and data privacy";
   }
   if (normalized.includes("claim")) return "I need help with claim-related questions";
   if (normalized.includes("coverage")) return "I want to explore coverage options";
+  if (normalized.includes("crm") || normalized.includes("scoring")) {
+    return "I want to continue with lead scoring and follow-up";
+  }
+  if (normalized.includes("account")) return "I would like to check my account balance";
+  if (normalized.includes("debit") || normalized.includes("card")) return "I need help with my debit card";
+  if (normalized.includes("transaction") || normalized.includes("dispute")) {
+    return "I have a transaction issue or dispute";
+  }
   if (normalized.includes("loan")) return "I would like to apply for a loan";
-  return `I need help with ${normalized}`;
+  return `I need help with ${label.toLowerCase()}`;
 };
 
 const extractButtonPool = (lines: string[]) => {
-  const useCaseLabels = lines
+  const pool: ButtonConfig[] = [];
+  const byLabel = new Set<string>();
+
+  const pushItem = (rawText: string) => {
+    const label = compactButtonLabel(rawText);
+    const labelKey = label.toLowerCase();
+    if (!label || byLabel.has(labelKey)) return;
+
+    byLabel.add(labelKey);
+    pool.push({
+      label,
+      intent: baseIntentFromLabel(label, rawText),
+    });
+  };
+
+  lines
     .filter((line) => /^use case/i.test(line))
-    .map((line) => {
+    .forEach((line) => {
       const splitByDash = line.split(/[-–]/);
-      const label = splitByDash[splitByDash.length - 1]?.trim() || line.trim();
-      return toTitleCase(label.replace(/^\d+\s*/, "").trim());
+      const rawText = splitByDash[splitByDash.length - 1]?.trim() || line.trim();
+      pushItem(rawText.replace(/^\d+\s*/, "").trim());
     });
 
-  const shortItems = lines
+  lines
     .filter(
       (line) =>
         !/^use case/i.test(line) &&
@@ -205,10 +298,9 @@ const extractButtonPool = (lines: string[]) => {
         line.length >= 8 &&
         line.length <= 40
     )
-    .map((line) => toTitleCase(line.replace(/\(.*?\)/g, "").trim()));
+    .forEach((line) => pushItem(line));
 
-  const merged = [...useCaseLabels, ...shortItems];
-  return [...new Set(merged)].filter(Boolean);
+  return pool;
 };
 
 const ensureButtonCount = (
@@ -223,18 +315,15 @@ const ensureButtonCount = (
   const used = new Set(current.map((button) => button.label.toLowerCase()));
   const nextButtons = [...current];
 
-  for (const label of pool) {
+  for (const buttonOption of pool) {
     if (nextButtons.length >= safeCount) break;
-    if (used.has(label.toLowerCase())) continue;
-    used.add(label.toLowerCase());
-    nextButtons.push({
-      label,
-      intent: baseIntentFromLabel(label),
-    });
+    if (used.has(buttonOption.label.toLowerCase())) continue;
+    used.add(buttonOption.label.toLowerCase());
+    nextButtons.push(buttonOption);
   }
 
   while (nextButtons.length < safeCount) {
-    const fallbackLabel = `Support Option ${nextButtons.length + 1}`;
+    const fallbackLabel = `Support ${nextButtons.length + 1}`;
     nextButtons.push({
       label: fallbackLabel,
       intent: baseIntentFromLabel(fallbackLabel),
@@ -362,12 +451,10 @@ export default function App() {
     const nextDescription = pickDescription(storyboardLines, domain);
     const pool = extractButtonPool(storyboardLines);
 
-    const starterButtons = (pool.length ? pool : DEFAULT_BUTTONS.map((button) => button.label))
-      .slice(0, Math.max(2, desiredButtonCount))
-      .map((label) => ({
-        label,
-        intent: baseIntentFromLabel(label),
-      }));
+    const starterButtons = (pool.length ? pool : DEFAULT_BUTTONS).slice(
+      0,
+      Math.max(2, desiredButtonCount)
+    );
 
     setTitle(nextTitle);
     setDescription(nextDescription);
